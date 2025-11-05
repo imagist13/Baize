@@ -61,7 +61,7 @@ export MODEL=deepseek-ai/DeepSeek-V3.1-Terminus
 
 4. **启动应用**
 ```bash
-python -m uvicorn app:app --host 0.0.0.0 --port 8000
+python run_new.py
 ```
 
 5. **访问应用**

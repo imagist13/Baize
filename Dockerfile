@@ -17,18 +17,21 @@ COPY requirements.txt .
 RUN pip install --no-cache-dir -r requirements.txt
 
 # 复制应用代码
-COPY . .
+COPY app/ ./app/
+COPY static/ ./static/
+COPY templates/ ./templates/
+COPY demo-credentials.json ./
 
 # 创建一个非 root 用户运行应用（可选，但推荐）
 RUN useradd -m -u 1000 appuser && chown -R appuser:appuser /app
 USER appuser
 
-# 暴露端口（ModelScope 通常使用 7860，但也支持 8000）
+# 暴露端口（ModelScope 使用 7860）
 EXPOSE 7860
 
 # 健康检查
 HEALTHCHECK --interval=30s --timeout=10s --start-period=5s --retries=3 \
     CMD python -c "import requests; requests.get('http://localhost:7860/', timeout=5)" || exit 1
 
-# 启动命令（使用 7860 端口以适配 ModelScope）
-CMD ["python", "-m", "uvicorn", "app:app", "--host", "0.0.0.0", "--port", "7860"]
+# 启动命令（使用新的 LangGraph 应用结构）
+CMD ["python", "-m", "uvicorn", "app.main:app", "--host", "0.0.0.0", "--port", "7860"]

@@ -11,7 +11,7 @@ document.addEventListener('DOMContentLoaded', () => {
         officialWebsite: { zh: "欢迎使用", en: "Welcome" },
         groupChat: { zh: "联系我们/加入交流群", en: "Contact Us / Join Community" },
         placeholders: {
-            zh: ["微积分的几何原理", "冒泡排序","热寂", "黑洞是如何形成的"],
+            zh: ["宇宙大爆炸", "恒星演化","日食", "天体运动"],
             en: ["Geometric principles of calculus", "Bubble sort", "Heat death", "How are black holes formed"]
         },
         newChat: { zh: "新对话", en: "New Chat" },
