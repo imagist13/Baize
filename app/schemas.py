@@ -1,8 +1,8 @@
 """
 Pydantic schemas for request/response models.
 """
-from typing import List, Optional
-from pydantic import BaseModel
+from typing import Any, List, Optional
+from pydantic import BaseModel, Field
 
 
 class ChatRequest(BaseModel):
@@ -49,20 +49,36 @@ class CombinedPlanningRequest(BaseModel):
     share_code_plan_with_page: bool = True
 
 
+class ScienceEducationRequest(BaseModel):
+    """Request model for science education page generation."""
+    topic: str
+    model: Optional[str] = None
+    history: Optional[List[dict]] = None
+
+
 class AgentState(BaseModel):
     """State model for LangGraph agents."""
     class Config:
         arbitrary_types_allowed = True
     
     # Common fields
-    messages: List[dict] = []
+    messages: List[dict] = Field(default_factory=list)
     error: Optional[str] = None
     
-    # Planning fields
+    # Planning fields (legacy)
     topic: Optional[str] = None
     problem: Optional[str] = None
     code_plan_result: Optional[dict] = None
     page_plan_result: Optional[dict] = None
+    
+    # Science education pipeline fields
+    need_search: bool = False
+    search_attempts: int = 0
+    search_queries: List[str] = Field(default_factory=list)
+    search_results: Optional[List[dict]] = None
+    prompt_blueprint: Optional[dict] = None
+    planner_output_raw: Optional[str] = None
+    knowledge_outline: Optional[List[dict]] = None
     
     # Generation fields
     generated_html: Optional[str] = None
@@ -70,4 +86,9 @@ class AgentState(BaseModel):
     # Metadata
     model: Optional[str] = None
     step: Optional[str] = None
+    metadata: Optional[dict] = None
+    extra: Optional[dict] = None
+
+    # Arbitrary passthrough
+    payload: Optional[Any] = None
 

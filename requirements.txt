@@ -8,3 +8,4 @@ google-genai
 requests
 langgraph
 langchain-core
+httpx

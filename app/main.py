@@ -5,7 +5,7 @@ from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.staticfiles import StaticFiles
 
-from .routers import planning_router, generation_router, ui_router
+from .routers import generation_router, ui_router
 
 
 def create_app() -> FastAPI:
@@ -29,7 +29,6 @@ def create_app() -> FastAPI:
     app.mount("/static", StaticFiles(directory="static"), name="static")
     
     # Include routers
-    app.include_router(planning_router)
     app.include_router(generation_router)
     app.include_router(ui_router)
     

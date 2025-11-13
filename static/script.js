@@ -57,14 +57,6 @@ document.addEventListener('DOMContentLoaded', () => {
         error: document.getElementById('agent-error-template'),
     };
 
-    class LLMParseError extends Error {
-        constructor(message, code = 'LLM_UNKNOWN_ERROR') {
-            super(message);
-            this.name = 'LLMParseError';
-            this.code = code;
-        }
-    }
-
     let conversationHistory = [];
     let accumulatedCode = '';
     let placeholderInterval;
@@ -89,136 +81,161 @@ document.addEventListener('DOMContentLoaded', () => {
         console.log('Getting generation from backend.');
         appendUserMessage(topic);
         const agentThinkingMessage = appendAgentStatus(translations.agentThinking[currentLang]);
-        // 查找当前激活的表单的提交按钮
         const submitButton = chatForm?.querySelector('button[type="submit"]') || initialForm?.querySelector('button[type="submit"]');
         if (submitButton) {
             submitButton.disabled = true;
             submitButton.classList.add('disabled');
         }
         accumulatedCode = '';
-        let inCodeBlock = false;
-        let codeBlockElement = null;
+
+        let plannerBlock = null;
+        let lastPlannerStep = null;
+        let htmlBlock = null;
+        let htmlHeaderInjected = false;
+        let htmlBuffer = '';
+        let htmlReceived = false;
+        let errorMessage = null;
+        let stopStreaming = false;
+
+        const appendPlannerUpdate = (title, payload) => {
+            if (!plannerBlock) {
+                plannerBlock = appendCodeBlock();
+            }
+            const header = `\n\n// ${title}\n`;
+            updateCodeBlock(plannerBlock, header + JSON.stringify(payload, null, 2) + '\n');
+        };
 
         try {
             const response = await fetch(`${config.apiBaseUrl}/generate`, {
                 method: 'POST',
                 headers: { 'Content-Type': 'application/json' },
-                body: JSON.stringify({ topic: topic, history: conversationHistory })
+                body: JSON.stringify({ topic, history: conversationHistory }),
             });
 
             if (!response.ok) throw new Error(`HTTP error! status: ${response.status}`);
+            const reader = response.body?.getReader();
+            if (!reader) throw new Error('Streaming not supported in this browser.');
 
-            const reader = response.body.getReader();
             const decoder = new TextDecoder();
             let buffer = '';
 
-            while (true) {
+            while (!stopStreaming) {
                 const { done, value } = await reader.read();
                 if (done) break;
 
                 buffer += decoder.decode(value, { stream: true });
-                const lines = buffer.split('\n\n');
-                buffer = lines.pop();
+                const segments = buffer.split('\n\n');
+                buffer = segments.pop() ?? '';
 
-                for (const line of lines) {
-                    if (!line.startsWith('data: ')) continue;
+                for (const segment of segments) {
+                    if (!segment.startsWith('data:')) continue;
+                    const jsonStr = segment.slice(5).trim().replace(/^:\s*/, '');
+                    if (!jsonStr) continue;
 
-                    const jsonStr = line.substring(6);
-                    if (jsonStr.includes('[DONE]')) {
-                        console.log('Streaming complete');
-                        conversationHistory.push({ role: 'assistant', content: accumulatedCode });
-
-                        if (!codeBlockElement) {
-                            console.warn('No code block element created. Full response:', accumulatedCode);
-                            throw new LLMParseError('LLM did not return a complete code block.');
-                        }
-
-                        if (!isHtmlContentValid(accumulatedCode)) {
-                            console.warn('Invalid HTML received:\n', accumulatedCode);
-                            throw new LLMParseError('Invalid HTML content received.');
-                        }
-
-                        markCodeAsComplete(codeBlockElement);
-
-                        try {
-                            if (accumulatedCode) {
-                                appendAnimationPlayer(accumulatedCode, topic);
-                            }
-                        } catch (err) {
-                            console.error('appendAnimationPlayer failed:', err);
-                            throw new LLMParseError('Animation rendering failed.');
-                        }
-                        scrollToBottom();
-                        return;
-                    }
-
-                    let data;
+                    let payload;
                     try {
-                        data = JSON.parse(jsonStr);
+                        payload = JSON.parse(jsonStr);
                     } catch (err) {
-                        console.error('Failed to parse JSON:', jsonStr);
-                        throw new LLMParseError('Invalid response format from server.');
+                        console.warn('Failed to parse SSE payload:', jsonStr, err);
+                        continue;
                     }
 
-                    if (data.error) {
-                        throw new LLMParseError(data.error);
-                    }
-                    const token = data.token || '';
+                    const eventType = payload.event;
+                    if (!eventType) continue;
 
-                    if (!inCodeBlock && token.includes('```')) {
-                        const startIdx = token.indexOf('```');
-                        const afterStart = token.substring(startIdx + 3);
-                        
-                        // 检查是否在同一个token中有结束标记
-                        const endIdx = afterStart.indexOf('```');
-                        
+                    if (eventType === 'planner') {
+                        lastPlannerStep = payload.step || 'planner';
+                        appendPlannerUpdate(`Planner (${lastPlannerStep})`, payload.parsed ?? payload);
+                    } else if (eventType === 'search') {
+                        appendPlannerUpdate(`Search: ${payload.query || ''}`, payload.result ?? {});
+                    } else if (eventType === 'generation') {
+                        const { delta, html, final } = payload;
+
+                        if (delta) {
+                            if (!htmlBlock) {
+                                htmlBlock = appendCodeBlock();
+                            }
+                            if (!htmlHeaderInjected) {
+                                const header = `\n\n<!-- Generated HTML (${new Date().toLocaleString()}) -->\n`;
+                                updateCodeBlock(htmlBlock, header);
+                                htmlHeaderInjected = true;
+                            }
+                            updateCodeBlock(htmlBlock, delta);
+                            htmlBuffer += delta;
+                        }
+
+                        if (final) {
+                            if (agentThinkingMessage) agentThinkingMessage.remove();
+                            if (plannerBlock) markCodeAsComplete(plannerBlock);
+
+                            let htmlContent = html || htmlBuffer;
+                            if (!htmlBlock) {
+                                htmlBlock = appendCodeBlock();
+                            }
+                            if (!htmlHeaderInjected) {
+                                const header = `\n\n<!-- Generated HTML (${new Date().toLocaleString()}) -->\n`;
+                                updateCodeBlock(htmlBlock, header);
+                                htmlHeaderInjected = true;
+                            }
+                            if (!delta && htmlContent && !htmlBuffer) {
+                                updateCodeBlock(htmlBlock, htmlContent + '\n');
+                                htmlBuffer = htmlContent;
+                            }
+                            markCodeAsComplete(htmlBlock);
+
+                            if (htmlContent && isHtmlContentValid(htmlContent)) {
+                                htmlBuffer = htmlContent;
+                                appendAnimationPlayer(htmlContent, topic);
+                                conversationHistory.push({ role: 'assistant', content: htmlContent });
+                                htmlReceived = true;
+                            } else {
+                                console.warn('Invalid or empty HTML received.');
+                                errorMessage = translations.errorLLMParseError[currentLang];
+                                appendErrorMessage(errorMessage);
+                                showWarning(errorMessage);
+                            }
+                        }
+                    } else if (eventType === 'error') {
+                        errorMessage = payload.message || translations.errorFetchFailed[currentLang];
                         if (agentThinkingMessage) agentThinkingMessage.remove();
-                        codeBlockElement = appendCodeBlock();
-                        
-                        if (endIdx !== -1) {
-                            // 同一个token中包含完整的代码块
-                            let content = afterStart.substring(0, endIdx);
-                            content = content.replace(/^\s*html\s*/i, '');
-                            updateCodeBlock(codeBlockElement, content);
-                            inCodeBlock = false;
-                        } else {
-                            // 只有开始标记
-                            inCodeBlock = true;
-                            let contentAfterMarker = afterStart.replace(/^\s*html\s*/i, '');
-                            updateCodeBlock(codeBlockElement, contentAfterMarker);
-                        }
-                    } else if (inCodeBlock) {
-                        if (token.includes('```')) {
-                            inCodeBlock = false;
-                            const contentBeforeMarker = token.substring(0, token.indexOf('```'));
-                            updateCodeBlock(codeBlockElement, contentBeforeMarker);
-                        } else {
-                            updateCodeBlock(codeBlockElement, token);
-                        }
+                        showWarning(errorMessage);
+                        appendErrorMessage(errorMessage);
+                        stopStreaming = true;
+                        break;
+                    } else if (eventType === 'done' || eventType === '[DONE]') {
+                        if (agentThinkingMessage) agentThinkingMessage.remove();
+                        stopStreaming = true;
+                        break;
                     }
                 }
             }
+
+            if (!htmlReceived && !errorMessage) {
+                const fallbackMessage = translations.errorLLMParseError[currentLang];
+                appendErrorMessage(fallbackMessage);
+                showWarning(fallbackMessage);
+            }
         } catch (error) {
-            console.error("Streaming failed:", error);
+            console.error("Generation failed:", error);
             if (agentThinkingMessage) agentThinkingMessage.remove();
 
+            let translated = translations.errorFetchFailed[currentLang];
             if (error instanceof TypeError && error.message.includes('Failed to fetch')) {
-                showWarning(translations.errorFetchFailed[currentLang]);
-            } else if (error.message.includes('status: 429')) {
-                showWarning(translations.errorTooManyRequests[currentLang]);
-            } else if (error instanceof LLMParseError) {
-                showWarning(translations.errorLLMParseError[currentLang]);
-            } else {
-                showWarning(translations.errorFetchFailed[currentLang]); // 默认 fallback
+                translated = translations.errorFetchFailed[currentLang];
+            } else if (error.message.includes('429')) {
+                translated = translations.errorTooManyRequests[currentLang];
+            } else if (error.message) {
+                translated = error.message;
             }
 
-            appendErrorMessage(translations.errorMessage[currentLang]);  // 保留 chat-log 中的提示
+            showWarning(translated);
+            appendErrorMessage(translated);
         } finally {
-        if (submitButton) {
-            submitButton.disabled = false;
-            submitButton.classList.remove('disabled');
+            if (submitButton) {
+                submitButton.disabled = false;
+                submitButton.classList.remove('disabled');
+            }
         }
-    }
     }
 
     function switchToChatView() {
