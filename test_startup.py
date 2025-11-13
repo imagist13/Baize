@@ -40,7 +40,7 @@ async def test_startup():
     # 3. 测试数据模型
     print("\n3️⃣ 测试数据模型...")
     try:
-        from app.schemas import ChatRequest, PlanningRequest, AgentState
+        from app.schemas import ScienceEducationRequest, AgentState
         print(f"  ✓ 数据模型导入成功")
         results.append(True)
     except Exception as e:
@@ -50,12 +50,8 @@ async def test_startup():
     # 4. 测试代理
     print("\n4️⃣ 测试代理...")
     try:
-        from app.agents import (
-            AnimationGenerationAgent,
-            CodePlanningAgent,
-            PagePlanningAgent
-        )
-        print(f"  ✓ 代理类导入成功")
+        from app.agents import SciencePlannerAgent, SciencePageGenerator
+        print(f"  ✓ 科普代理类导入成功")
         results.append(True)
     except Exception as e:
         print(f"  ✗ 代理导入失败: {e}")
@@ -64,20 +60,10 @@ async def test_startup():
     # 5. 测试工作流图
     print("\n5️⃣ 测试 LangGraph 工作流...")
     try:
-        from app.graph import (
-            create_code_planning_graph,
-            create_page_planning_graph,
-            create_combined_planning_graph
-        )
+        from app.graph import create_science_education_graph
         
-        code_graph = create_code_planning_graph()
-        page_graph = create_page_planning_graph()
-        combined_graph = create_combined_planning_graph()
-        
-        print(f"  ✓ LangGraph 工作流创建成功")
-        print(f"  - 代码规划工作流: 已创建")
-        print(f"  - 页面规划工作流: 已创建")
-        print(f"  - 组合工作流: 已创建")
+        science_graph = create_science_education_graph()
+        print(f"  ✓ LangGraph 科普工作流创建成功: {science_graph}")
         results.append(True)
     except Exception as e:
         print(f"  ✗ 工作流创建失败: {e}")
@@ -88,8 +74,8 @@ async def test_startup():
     # 6. 测试服务
     print("\n6️⃣ 测试服务层...")
     try:
-        from app.services import PlanningService
-        print(f"  ✓ 服务层导入成功")
+        from app.services import ScienceEducationService
+        print(f"  ✓ 科普服务层导入成功")
         results.append(True)
     except Exception as e:
         print(f"  ✗ 服务层导入失败: {e}")
@@ -98,7 +84,7 @@ async def test_startup():
     # 7. 测试路由
     print("\n7️⃣ 测试路由...")
     try:
-        from app.routers import planning_router, generation_router, ui_router
+        from app.routers import generation_router, ui_router
         print(f"  ✓ 路由导入成功")
         results.append(True)
     except Exception as e:
@@ -118,7 +104,7 @@ async def test_startup():
         print(f"  - 注册路由数: {len(routes)}")
         
         # 检查关键路由
-        key_routes = ["/", "/generate", "/plan", "/code/plan", "/plan/combined"]
+        key_routes = ["/", "/generate"]
         missing = [r for r in key_routes if r not in routes]
         
         if missing:

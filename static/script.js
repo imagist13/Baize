@@ -57,14 +57,6 @@ document.addEventListener('DOMContentLoaded', () => {
         error: document.getElementById('agent-error-template'),
     };
 
-    class LLMParseError extends Error {
-        constructor(message, code = 'LLM_UNKNOWN_ERROR') {
-            super(message);
-            this.name = 'LLMParseError';
-            this.code = code;
-        }
-    }
-
     let conversationHistory = [];
     let accumulatedCode = '';
     let placeholderInterval;
@@ -89,15 +81,12 @@ document.addEventListener('DOMContentLoaded', () => {
         console.log('Getting generation from backend.');
         appendUserMessage(topic);
         const agentThinkingMessage = appendAgentStatus(translations.agentThinking[currentLang]);
-        // 查找当前激活的表单的提交按钮
         const submitButton = chatForm?.querySelector('button[type="submit"]') || initialForm?.querySelector('button[type="submit"]');
         if (submitButton) {
             submitButton.disabled = true;
             submitButton.classList.add('disabled');
         }
         accumulatedCode = '';
-        let inCodeBlock = false;
-        let codeBlockElement = null;
 
         try {
             const response = await fetch(`${config.apiBaseUrl}/generate`, {
@@ -108,117 +97,53 @@ document.addEventListener('DOMContentLoaded', () => {
 
             if (!response.ok) throw new Error(`HTTP error! status: ${response.status}`);
 
-            const reader = response.body.getReader();
-            const decoder = new TextDecoder();
-            let buffer = '';
-
-            while (true) {
-                const { done, value } = await reader.read();
-                if (done) break;
-
-                buffer += decoder.decode(value, { stream: true });
-                const lines = buffer.split('\n\n');
-                buffer = lines.pop();
-
-                for (const line of lines) {
-                    if (!line.startsWith('data: ')) continue;
-
-                    const jsonStr = line.substring(6);
-                    if (jsonStr.includes('[DONE]')) {
-                        console.log('Streaming complete');
-                        conversationHistory.push({ role: 'assistant', content: accumulatedCode });
-
-                        if (!codeBlockElement) {
-                            console.warn('No code block element created. Full response:', accumulatedCode);
-                            throw new LLMParseError('LLM did not return a complete code block.');
-                        }
-
-                        if (!isHtmlContentValid(accumulatedCode)) {
-                            console.warn('Invalid HTML received:\n', accumulatedCode);
-                            throw new LLMParseError('Invalid HTML content received.');
-                        }
-
-                        markCodeAsComplete(codeBlockElement);
-
-                        try {
-                            if (accumulatedCode) {
-                                appendAnimationPlayer(accumulatedCode, topic);
-                            }
-                        } catch (err) {
-                            console.error('appendAnimationPlayer failed:', err);
-                            throw new LLMParseError('Animation rendering failed.');
-                        }
-                        scrollToBottom();
-                        return;
-                    }
-
-                    let data;
-                    try {
-                        data = JSON.parse(jsonStr);
-                    } catch (err) {
-                        console.error('Failed to parse JSON:', jsonStr);
-                        throw new LLMParseError('Invalid response format from server.');
-                    }
-
-                    if (data.error) {
-                        throw new LLMParseError(data.error);
-                    }
-                    const token = data.token || '';
-
-                    if (!inCodeBlock && token.includes('```')) {
-                        const startIdx = token.indexOf('```');
-                        const afterStart = token.substring(startIdx + 3);
-                        
-                        // 检查是否在同一个token中有结束标记
-                        const endIdx = afterStart.indexOf('```');
-                        
-                        if (agentThinkingMessage) agentThinkingMessage.remove();
-                        codeBlockElement = appendCodeBlock();
-                        
-                        if (endIdx !== -1) {
-                            // 同一个token中包含完整的代码块
-                            let content = afterStart.substring(0, endIdx);
-                            content = content.replace(/^\s*html\s*/i, '');
-                            updateCodeBlock(codeBlockElement, content);
-                            inCodeBlock = false;
-                        } else {
-                            // 只有开始标记
-                            inCodeBlock = true;
-                            let contentAfterMarker = afterStart.replace(/^\s*html\s*/i, '');
-                            updateCodeBlock(codeBlockElement, contentAfterMarker);
-                        }
-                    } else if (inCodeBlock) {
-                        if (token.includes('```')) {
-                            inCodeBlock = false;
-                            const contentBeforeMarker = token.substring(0, token.indexOf('```'));
-                            updateCodeBlock(codeBlockElement, contentBeforeMarker);
-                        } else {
-                            updateCodeBlock(codeBlockElement, token);
-                        }
-                    }
-                }
+            const data = await response.json();
+            if (data.error || data.detail) {
+                const errMessage = data.error || data.detail || translations.errorFetchFailed[currentLang];
+                throw new Error(errMessage);
             }
-        } catch (error) {
-            console.error("Streaming failed:", error);
+
             if (agentThinkingMessage) agentThinkingMessage.remove();
 
-            if (error instanceof TypeError && error.message.includes('Failed to fetch')) {
-                showWarning(translations.errorFetchFailed[currentLang]);
-            } else if (error.message.includes('status: 429')) {
-                showWarning(translations.errorTooManyRequests[currentLang]);
-            } else if (error instanceof LLMParseError) {
-                showWarning(translations.errorLLMParseError[currentLang]);
-            } else {
-                showWarning(translations.errorFetchFailed[currentLang]); // 默认 fallback
+            if (data.planner_output) {
+                const plannerBlock = appendCodeBlock();
+                const plannerText = JSON.stringify(data.planner_output, null, 2);
+                updateCodeBlock(plannerBlock, plannerText || translations.errorMessage[currentLang]);
+                markCodeAsComplete(plannerBlock);
             }
 
-            appendErrorMessage(translations.errorMessage[currentLang]);  // 保留 chat-log 中的提示
+            const htmlContent = data.html || '';
+            accumulatedCode = htmlContent;
+
+            if (htmlContent && isHtmlContentValid(htmlContent)) {
+                appendAnimationPlayer(htmlContent, topic);
+                conversationHistory.push({ role: 'assistant', content: htmlContent });
+            } else {
+                console.warn('Invalid or empty HTML received.');
+                appendErrorMessage(translations.errorLLMParseError[currentLang]);
+            }
+            scrollToBottom();
+        } catch (error) {
+            console.error("Generation failed:", error);
+            if (agentThinkingMessage) agentThinkingMessage.remove();
+
+            let translated = translations.errorFetchFailed[currentLang];
+            if (error instanceof TypeError && error.message.includes('Failed to fetch')) {
+                translated = translations.errorFetchFailed[currentLang];
+            } else if (error.message.includes('429')) {
+                translated = translations.errorTooManyRequests[currentLang];
+            } else if (error.message) {
+                translated = error.message;
+            }
+
+            showWarning(translated);
+            appendErrorMessage(translated);
         } finally {
-        if (submitButton) {
-            submitButton.disabled = false;
-            submitButton.classList.remove('disabled');
+            if (submitButton) {
+                submitButton.disabled = false;
+                submitButton.classList.remove('disabled');
+            }
         }
-    }
     }
 
     function switchToChatView() {

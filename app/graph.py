@@ -1,210 +1,172 @@
 """
-LangGraph workflow definitions for orchestrating planning agents.
+LangGraph workflow definitions for orchestrating the science education pipeline.
 """
 import json
-from typing import Dict, Any
+from typing import Any, Dict, List
+
 from langgraph.graph import StateGraph, END
+
+from .logging_config import get_logger
 from .schemas import AgentState
-from .agents import CodePlanningAgent, PagePlanningAgent
+from .agents import SciencePlannerAgent, SciencePageGenerator
+from .tools import TailiySearchTool
+
+logger = get_logger(__name__)
 
 
-def create_combined_planning_graph():
+def create_science_education_graph():
     """
-    Create a LangGraph workflow for combined code and page planning.
-    
-    Workflow:
-    1. code_planning_node: Generate code architecture plan
-    2. should_share_code_plan: Decide if code plan should be shared with page planning
-    3. page_planning_node: Generate page layout plan (with optional code plan context)
-    4. END
+    Create a LangGraph workflow that mirrors the new product flow:
+
+    月食主题 -> 提示词与网页 planer agent -> (可选) Tailiy 网络检索工具 -> 科普教育网页生成 -> 页面返回
     """
-    
-    async def code_planning_node(state: AgentState) -> Dict[str, Any]:
-        """Node that executes code planning."""
+
+    async def planner_node(state: AgentState) -> Dict[str, Any]:
+        """Decide whether to search and produce blueprint prompts."""
+        logger.info("Planner node start: topic=%s existing_search=%s", state.topic, bool(state.search_results))
         try:
-            code_plan_raw = await CodePlanningAgent.plan(
-                problem=state.problem,
+            planner_raw = await SciencePlannerAgent.plan(
+                topic=state.topic or "",
+                search_results=state.search_results,
                 history=state.messages,
                 model=state.model,
             )
-            
-            # Try to parse JSON
-            code_plan_parsed = None
-            try:
-                code_plan_parsed = json.loads(code_plan_raw)
-            except (json.JSONDecodeError, TypeError, ValueError):
-                pass
-            
+        except Exception as exc:
+            logger.exception("Planner agent failed: %s", exc)
             return {
-                "code_plan_result": {
-                    "parsed": code_plan_parsed,
-                    "raw": code_plan_raw,
-                },
-                "step": "code_planning_complete",
+                "error": f"策划代理执行失败: {exc}",
+                "step": "planner_failed",
             }
-        except Exception as e:
-            return {
-                "error": f"Code planning failed: {str(e)}",
-                "step": "code_planning_failed",
-            }
-    
-    async def page_planning_node(state: AgentState) -> Dict[str, Any]:
-        """Node that executes page planning."""
+
+        parsed: Dict[str, Any] = {}
         try:
-            # Build history including code plan if available
-            page_history = list(state.messages or [])
-            
-            if state.code_plan_result:
-                code_plan = state.code_plan_result
-                if isinstance(code_plan.get("parsed"), (dict, list)):
-                    code_context_str = json.dumps(
-                        code_plan["parsed"], 
-                        ensure_ascii=False, 
-                        indent=2
-                    )
-                else:
-                    code_context_str = code_plan.get("raw", "")
-                
-                page_history.append({
-                    "role": "user",
-                    "content": (
-                        "以下是复杂代码规划的结果，请基于此优化网页信息架构与响应式策略：\n"
-                        f"{code_context_str}"
-                    ),
-                })
-            
-            page_plan_raw = await PagePlanningAgent.plan(
-                topic=state.topic,
-                history=page_history if page_history else None,
+            parsed = json.loads(planner_raw)
+        except json.JSONDecodeError:
+            logger.error("Planner output not JSON: %s", planner_raw)
+            return {
+                "error": "策划代理返回内容无法解析为 JSON",
+                "planner_output_raw": planner_raw,
+                "step": "planner_parse_failed",
+            }
+
+        need_search = bool(parsed.get("need_search", False))
+        queries: List[str] = []
+        for item in parsed.get("search_queries", []):
+            if isinstance(item, str) and item.strip():
+                queries.append(item.strip())
+
+        planner_update = {
+            "planner_output_raw": planner_raw,
+            "prompt_blueprint": parsed,
+            "knowledge_outline": parsed.get("knowledge_outline"),
+            "need_search": need_search,
+            "search_queries": queries,
+            "step": "planner_complete",
+            "metadata": {
+                "json_prompt": parsed.get("json_prompt"),
+                "safety_notes": parsed.get("page_blueprint", {}).get("safety_notes") if isinstance(parsed.get("page_blueprint"), dict) else None,
+            },
+        }
+
+        if need_search and queries:
+            planner_update["search_results"] = None  # reset stale results
+
+        logger.info(
+            "Planner node complete: need_search=%s queries=%s blueprint_keys=%s",
+            need_search,
+            queries,
+            list(parsed.keys()),
+        )
+        return planner_update
+
+    async def search_node(state: AgentState) -> Dict[str, Any]:
+        """Invoke Tailiy search tool based on planner queries."""
+        if not state.search_queries:
+            return {
+                "need_search": False,
+                "search_results": [],
+                "step": "search_skipped",
+            }
+
+        search_results = []
+        for query in state.search_queries[:3]:
+            result = await TailiySearchTool.search(query)
+            search_results.append(result)
+
+        logger.info(
+            "Search node complete: queries=%s errors=%s",
+            [r.get("query") for r in search_results],
+            [r.get("error") for r in search_results if r.get("error")],
+        )
+        return {
+            "search_results": search_results,
+            "search_attempts": state.search_attempts + 1,
+            "need_search": False,
+            "step": "search_complete",
+        }
+
+    async def generation_node(state: AgentState) -> Dict[str, Any]:
+        """Generate the final HTML page based on the planner blueprint."""
+        planner_payload = state.prompt_blueprint or {}
+        knowledge_outline = planner_payload.get("knowledge_outline") or state.knowledge_outline
+
+        try:
+            html = await SciencePageGenerator.generate(
+                topic=state.topic or "",
+                planner_payload=planner_payload,
+                search_results=state.search_results,
+                history=state.messages,
                 model=state.model,
             )
-            
-            # Try to parse JSON
-            page_plan_parsed = None
-            try:
-                page_plan_parsed = json.loads(page_plan_raw)
-            except (json.JSONDecodeError, TypeError, ValueError):
-                pass
-            
+        except Exception as exc:
+            logger.exception("Generation node failed: %s", exc)
             return {
-                "page_plan_result": {
-                    "parsed": page_plan_parsed,
-                    "raw": page_plan_raw,
-                },
-                "step": "page_planning_complete",
+                "error": f"网页生成失败: {exc}",
+                "step": "generation_failed",
             }
-        except Exception as e:
-            return {
-                "error": f"Page planning failed: {str(e)}",
-                "step": "page_planning_failed",
-            }
-    
-    def should_continue_to_page(state: AgentState) -> str:
-        """Conditional edge: check if we should continue to page planning."""
+
+        logger.info("Generation node produced HTML length=%s", len(html or ""))
+        return {
+            "generated_html": html,
+            "knowledge_outline": knowledge_outline,
+            "step": "generation_complete",
+        }
+
+    def planner_router(state: AgentState) -> str:
+        """Determine next step after planner node."""
         if state.error:
             return END
-        return "page_planning"
-    
-    # Build the graph
+        if state.need_search:
+            if state.search_results and all(not r.get("error") for r in state.search_results):
+                logger.info("Planner router: using existing search results")
+            else:
+                if state.search_attempts >= 2:
+                    logger.warning("Planner router: search skipped after %s attempts with errors", state.search_attempts)
+                    state.need_search = False
+                else:
+                    logger.info("Planner router: retrying search (attempt %s)", state.search_attempts + 1)
+                    return "search"
+        if not state.prompt_blueprint:
+            return END
+        return "generation"
+
     workflow = StateGraph(AgentState)
-    
-    # Add nodes
-    workflow.add_node("code_planning", code_planning_node)
-    workflow.add_node("page_planning", page_planning_node)
-    
-    # Define edges
-    workflow.set_entry_point("code_planning")
+
+    workflow.add_node("planner", planner_node)
+    workflow.add_node("search", search_node)
+    workflow.add_node("generation", generation_node)
+
+    workflow.set_entry_point("planner")
     workflow.add_conditional_edges(
-        "code_planning",
-        should_continue_to_page,
+        "planner",
+        planner_router,
         {
-            "page_planning": "page_planning",
+            "search": "search",
+            "generation": "generation",
             END: END,
-        }
+        },
     )
-    workflow.add_edge("page_planning", END)
-    
+    workflow.add_edge("search", "planner")
+    workflow.add_edge("generation", END)
+
     return workflow.compile()
-
-
-def create_code_planning_graph():
-    """
-    Create a simple graph for standalone code planning.
-    """
-    
-    async def code_planning_node(state: AgentState) -> Dict[str, Any]:
-        """Node that executes code planning."""
-        try:
-            code_plan_raw = await CodePlanningAgent.plan(
-                problem=state.problem,
-                history=state.messages,
-                model=state.model,
-            )
-            
-            code_plan_parsed = None
-            try:
-                code_plan_parsed = json.loads(code_plan_raw)
-            except (json.JSONDecodeError, TypeError, ValueError):
-                pass
-            
-            return {
-                "code_plan_result": {
-                    "parsed": code_plan_parsed,
-                    "raw": code_plan_raw,
-                },
-                "step": "code_planning_complete",
-            }
-        except Exception as e:
-            return {
-                "error": f"Code planning failed: {str(e)}",
-                "step": "code_planning_failed",
-            }
-    
-    workflow = StateGraph(AgentState)
-    workflow.add_node("code_planning", code_planning_node)
-    workflow.set_entry_point("code_planning")
-    workflow.add_edge("code_planning", END)
-    
-    return workflow.compile()
-
-
-def create_page_planning_graph():
-    """
-    Create a simple graph for standalone page planning.
-    """
-    
-    async def page_planning_node(state: AgentState) -> Dict[str, Any]:
-        """Node that executes page planning."""
-        try:
-            page_plan_raw = await PagePlanningAgent.plan(
-                topic=state.topic,
-                history=state.messages,
-                model=state.model,
-            )
-            
-            page_plan_parsed = None
-            try:
-                page_plan_parsed = json.loads(page_plan_raw)
-            except (json.JSONDecodeError, TypeError, ValueError):
-                pass
-            
-            return {
-                "page_plan_result": {
-                    "parsed": page_plan_parsed,
-                    "raw": page_plan_raw,
-                },
-                "step": "page_planning_complete",
-            }
-        except Exception as e:
-            return {
-                "error": f"Page planning failed: {str(e)}",
-                "step": "page_planning_failed",
-            }
-    
-    workflow = StateGraph(AgentState)
-    workflow.add_node("page_planning", page_planning_node)
-    workflow.set_entry_point("page_planning")
-    workflow.add_edge("page_planning", END)
-    
-    return workflow.compile()
-

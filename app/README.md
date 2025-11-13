@@ -11,10 +11,11 @@ app/
 ├── clients.py            # API 客户端管理（OpenAI, Gemini）
 ├── schemas.py            # Pydantic 数据模型
 ├── prompts.py            # 系统提示词模板
-├── agents.py             # 智能代理实现
+├── agents.py             # 科普策划与生成代理
 ├── graph.py              # LangGraph 工作流定义
 ├── services.py           # 业务逻辑服务层
 ├── routers.py            # FastAPI 路由
+├── tools.py              # 外部工具封装（Tailiy 搜索）
 └── main.py               # 应用入口
 ```
 
@@ -31,44 +32,32 @@ app/
 - 提供客户端就绪状态检查
 
 ### 3. Schemas (`schemas.py`)
-- `ChatRequest`: 聊天/生成请求
-- `PlanningRequest`: 页面规划请求
-- `CodePlanningRequest`: 代码规划请求
-- `CombinedPlanningRequest`: 组合规划请求
-- `AgentState`: LangGraph 状态模型
+- `ScienceEducationRequest`: 科普网页生成请求
+- `AgentState`: LangGraph 状态模型（记录搜索、策划与生成阶段信息）
 
 ### 4. Prompts (`prompts.py`)
-- `ANIMATION_GENERATION_PROMPT`: 动画生成提示词
-- `CODE_PLANNING_PROMPT`: 代码规划提示词
-- `PAGE_PLANNING_PROMPT`: 页面规划提示词
+- `SCIENCE_PLANNER_PROMPT`: 科普策划提示词
+- `SCIENCE_PAGE_GENERATION_PROMPT`: 科普网页生成提示词
 
 ### 5. Agents (`agents.py`)
-三个专门的智能代理：
-- `AnimationGenerationAgent`: 生成交互式动画 HTML
-- `CodePlanningAgent`: 生成代码架构规划
-- `PagePlanningAgent`: 生成页面布局规划
+围绕科普网页生产的两个核心代理：
+- `SciencePlannerAgent`: 判断是否需要联网检索并生成页面蓝图
+- `SciencePageGenerator`: 根据蓝图和检索结果生成最终 HTML
 
 ### 6. Graph (`graph.py`)
-使用 LangGraph 定义工作流：
-- `create_code_planning_graph()`: 独立代码规划流程
-- `create_page_planning_graph()`: 独立页面规划流程
-- `create_combined_planning_graph()`: 组合规划流程
-  - 先执行代码规划
-  - 将代码规划结果传递给页面规划
-  - 支持条件边和错误处理
+使用 LangGraph 定义科普网页工作流：
+- `create_science_education_graph()`
+  - Planner 节点生成提示蓝图
+  - 可选 Search 节点调用 Tailiy API
+  - Generation 节点产出最终网页
 
 ### 7. Services (`services.py`)
-`PlanningService` 提供高层业务逻辑：
-- `execute_code_planning()`: 执行代码规划
-- `execute_page_planning()`: 执行页面规划
-- `execute_combined_planning()`: 执行组合规划
+`ScienceEducationService` 将工作流封装为易用的服务：
+- `generate_science_page()`: 完成策划、检索与页面生成
 
 ### 8. Routers (`routers.py`)
 FastAPI 路由定义：
-- `/code/plan`: 代码规划端点
-- `/plan`: 页面规划端点
-- `/plan/combined`: 组合规划端点
-- `/generate`: 动画生成端点（SSE 流式）
+- `/generate`: 科普网页生成端点（返回 JSON，包含策划蓝图与 HTML）
 - `/`: 主页 UI
 
 ### 9. Main (`main.py`)
@@ -78,16 +67,16 @@ FastAPI 路由定义：
 
 ## LangGraph 工作流示例
 
-### 组合规划流程
+### 科普网页流程
 
 ```
 START
   ↓
-[Code Planning Node]
+Planner 节点
   ↓
-{Should Continue?}
-  ↓ (yes)          ↓ (error)
-[Page Planning]    END
+{是否需要搜索?}
+  ↓ (是)           ↓ (否/失败)
+Tailiy 搜索        Generation 节点
   ↓
 END
 ```
@@ -112,12 +101,6 @@ python run_new.py
 
 ```bash
 uvicorn app.main:app --reload --host 0.0.0.0 --port 8000
-```
-
-### 启动应用（旧架构）
-
-```bash
-python app.py
 ```
 
 ## 配置
@@ -180,22 +163,12 @@ workflow.add_edge("previous_node", "my_node")
 ## 测试
 
 ```bash
-# 测试代码规划
-curl -X POST http://localhost:8000/code/plan \
-  -H "Content-Type: application/json" \
-  -d '{"problem": "实现一个分布式缓存系统"}'
-
-# 测试页面规划
-curl -X POST http://localhost:8000/plan \
-  -H "Content-Type: application/json" \
-  -d '{"topic": "冒泡排序可视化"}'
-
-# 测试组合规划
-curl -X POST http://localhost:8000/plan/combined \
+# 触发科普网页生成流程
+curl -X POST http://localhost:8000/generate \
   -H "Content-Type: application/json" \
   -d '{
-    "code_plan": {"problem": "实现排序算法"},
-    "page_plan": {"topic": "排序算法可视化"}
+    "topic": "月食",
+    "history": []
   }'
 ```
 

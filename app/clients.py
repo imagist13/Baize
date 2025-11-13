@@ -8,7 +8,10 @@ from openai import AsyncOpenAI
 try:
     import google.generativeai as genai
 except ModuleNotFoundError:
-    from google import genai
+    try:
+        from google import genai
+    except ImportError:
+        genai = None
 
 from .config import config
 
@@ -26,19 +29,23 @@ class ClientManager:
     def _initialize_clients(self):
         """Initialize appropriate client based on API key."""
         if not config.is_valid():
-            print("警告: 请在环境变量或 credentials.json 文件中配置 API_KEY")
+            print("⚠ 警告: 请在环境变量或 credentials.json 文件中配置 API_KEY 和 MODEL")
             return
         
         if config.is_gemini_key():
             # Initialize Gemini client
             if genai is None:
-                print("警告: Google Generative AI SDK 未安装")
+                print("⚠ 警告: Google Generative AI SDK 未安装，请运行: pip install google-generativeai")
                 return
             
-            os.environ["GEMINI_API_KEY"] = config.api_key
-            self.gemini_client = genai.Client()
-            self.use_gemini = True
-            print("✓ Gemini 客户端初始化成功")
+            try:
+                os.environ["GEMINI_API_KEY"] = config.api_key
+                self.gemini_client = genai.Client()
+                self.use_gemini = True
+                print("✓ Gemini 客户端初始化成功")
+            except Exception as e:
+                print(f"⚠ 警告: Gemini 客户端初始化失败: {e}")
+                return
         else:
             # Initialize OpenAI client
             extra_headers = {}
@@ -48,13 +55,17 @@ class ClientManager:
                     "X-Title": "Fogsight - AI Animation Generator"
                 }
             
-            self.openai_client = AsyncOpenAI(
-                api_key=config.api_key,
-                base_url=config.base_url if config.base_url else None,
-                default_headers=extra_headers
-            )
-            self.use_gemini = False
-            print("✓ OpenAI 客户端初始化成功")
+            try:
+                self.openai_client = AsyncOpenAI(
+                    api_key=config.api_key,
+                    base_url=config.base_url if config.base_url else None,
+                    default_headers=extra_headers
+                )
+                self.use_gemini = False
+                print("✓ OpenAI 客户端初始化成功")
+            except Exception as e:
+                print(f"⚠ 警告: OpenAI 客户端初始化失败: {e}")
+                return
     
     def get_client(self):
         """Get the active client."""
