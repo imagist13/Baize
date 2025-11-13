@@ -88,41 +88,133 @@ document.addEventListener('DOMContentLoaded', () => {
         }
         accumulatedCode = '';
 
+        let plannerBlock = null;
+        let lastPlannerStep = null;
+        let htmlBlock = null;
+        let htmlHeaderInjected = false;
+        let htmlBuffer = '';
+        let htmlReceived = false;
+        let errorMessage = null;
+        let stopStreaming = false;
+
+        const appendPlannerUpdate = (title, payload) => {
+            if (!plannerBlock) {
+                plannerBlock = appendCodeBlock();
+            }
+            const header = `\n\n// ${title}\n`;
+            updateCodeBlock(plannerBlock, header + JSON.stringify(payload, null, 2) + '\n');
+        };
+
         try {
             const response = await fetch(`${config.apiBaseUrl}/generate`, {
                 method: 'POST',
                 headers: { 'Content-Type': 'application/json' },
-                body: JSON.stringify({ topic: topic, history: conversationHistory })
+                body: JSON.stringify({ topic, history: conversationHistory }),
             });
 
             if (!response.ok) throw new Error(`HTTP error! status: ${response.status}`);
+            const reader = response.body?.getReader();
+            if (!reader) throw new Error('Streaming not supported in this browser.');
 
-            const data = await response.json();
-            if (data.error || data.detail) {
-                const errMessage = data.error || data.detail || translations.errorFetchFailed[currentLang];
-                throw new Error(errMessage);
+            const decoder = new TextDecoder();
+            let buffer = '';
+
+            while (!stopStreaming) {
+                const { done, value } = await reader.read();
+                if (done) break;
+
+                buffer += decoder.decode(value, { stream: true });
+                const segments = buffer.split('\n\n');
+                buffer = segments.pop() ?? '';
+
+                for (const segment of segments) {
+                    if (!segment.startsWith('data:')) continue;
+                    const jsonStr = segment.slice(5).trim().replace(/^:\s*/, '');
+                    if (!jsonStr) continue;
+
+                    let payload;
+                    try {
+                        payload = JSON.parse(jsonStr);
+                    } catch (err) {
+                        console.warn('Failed to parse SSE payload:', jsonStr, err);
+                        continue;
+                    }
+
+                    const eventType = payload.event;
+                    if (!eventType) continue;
+
+                    if (eventType === 'planner') {
+                        lastPlannerStep = payload.step || 'planner';
+                        appendPlannerUpdate(`Planner (${lastPlannerStep})`, payload.parsed ?? payload);
+                    } else if (eventType === 'search') {
+                        appendPlannerUpdate(`Search: ${payload.query || ''}`, payload.result ?? {});
+                    } else if (eventType === 'generation') {
+                        const { delta, html, final } = payload;
+
+                        if (delta) {
+                            if (!htmlBlock) {
+                                htmlBlock = appendCodeBlock();
+                            }
+                            if (!htmlHeaderInjected) {
+                                const header = `\n\n<!-- Generated HTML (${new Date().toLocaleString()}) -->\n`;
+                                updateCodeBlock(htmlBlock, header);
+                                htmlHeaderInjected = true;
+                            }
+                            updateCodeBlock(htmlBlock, delta);
+                            htmlBuffer += delta;
+                        }
+
+                        if (final) {
+                            if (agentThinkingMessage) agentThinkingMessage.remove();
+                            if (plannerBlock) markCodeAsComplete(plannerBlock);
+
+                            let htmlContent = html || htmlBuffer;
+                            if (!htmlBlock) {
+                                htmlBlock = appendCodeBlock();
+                            }
+                            if (!htmlHeaderInjected) {
+                                const header = `\n\n<!-- Generated HTML (${new Date().toLocaleString()}) -->\n`;
+                                updateCodeBlock(htmlBlock, header);
+                                htmlHeaderInjected = true;
+                            }
+                            if (!delta && htmlContent && !htmlBuffer) {
+                                updateCodeBlock(htmlBlock, htmlContent + '\n');
+                                htmlBuffer = htmlContent;
+                            }
+                            markCodeAsComplete(htmlBlock);
+
+                            if (htmlContent && isHtmlContentValid(htmlContent)) {
+                                htmlBuffer = htmlContent;
+                                appendAnimationPlayer(htmlContent, topic);
+                                conversationHistory.push({ role: 'assistant', content: htmlContent });
+                                htmlReceived = true;
+                            } else {
+                                console.warn('Invalid or empty HTML received.');
+                                errorMessage = translations.errorLLMParseError[currentLang];
+                                appendErrorMessage(errorMessage);
+                                showWarning(errorMessage);
+                            }
+                        }
+                    } else if (eventType === 'error') {
+                        errorMessage = payload.message || translations.errorFetchFailed[currentLang];
+                        if (agentThinkingMessage) agentThinkingMessage.remove();
+                        showWarning(errorMessage);
+                        appendErrorMessage(errorMessage);
+                        stopStreaming = true;
+                        break;
+                    } else if (eventType === 'done' || eventType === '[DONE]') {
+                        if (agentThinkingMessage) agentThinkingMessage.remove();
+                        stopStreaming = true;
+                        break;
+                    }
+                }
             }
 
-            if (agentThinkingMessage) agentThinkingMessage.remove();
-
-            if (data.planner_output) {
-                const plannerBlock = appendCodeBlock();
-                const plannerText = JSON.stringify(data.planner_output, null, 2);
-                updateCodeBlock(plannerBlock, plannerText || translations.errorMessage[currentLang]);
-                markCodeAsComplete(plannerBlock);
+            if (!htmlReceived && !errorMessage) {
+                const fallbackMessage = translations.errorLLMParseError[currentLang];
+                appendErrorMessage(fallbackMessage);
+                showWarning(fallbackMessage);
             }
-
-            const htmlContent = data.html || '';
-            accumulatedCode = htmlContent;
-
-            if (htmlContent && isHtmlContentValid(htmlContent)) {
-                appendAnimationPlayer(htmlContent, topic);
-                conversationHistory.push({ role: 'assistant', content: htmlContent });
-            } else {
-                console.warn('Invalid or empty HTML received.');
-                appendErrorMessage(translations.errorLLMParseError[currentLang]);
-            }
-            scrollToBottom();
         } catch (error) {
             console.error("Generation failed:", error);
             if (agentThinkingMessage) agentThinkingMessage.remove();

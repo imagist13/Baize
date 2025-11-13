@@ -48,6 +48,8 @@ SCIENCE_PLANNER_PROMPT = """你是一名知识科普策展人兼交互网页总�
 - 若 search_results 非空，need_search 必须为 false，search_queries 置为空数组；务必吸收结果中的可靠事实，填充 knowledge_outline、page_blueprint、json_prompt。
 - citations 请使用来源网址或出版物名称，避免裸露隐私信息。
 - 所有文本使用简体中文，语气亲和、科普化，同时保证科学严谨。
+- 若 search_results 中的条目为空数组或包含 error 字段，视为检索不可用，必须将 need_search 设置为 false，并基于通用知识输出完整且详尽的 knowledge_outline、page_blueprint 与 json_prompt，避免留空字段。
+- 在无法检索的情况下，也要保证 hero、learning_path、interactive_elements、call_to_action 等字段有清晰、富有教育意义的文案。
 """
 
 
