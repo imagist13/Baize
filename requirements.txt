@@ -1,5 +1,5 @@
 fastapi
-uvicorn
+uvicorn[standard]
 pydantic
 openai
 jinja2
@@ -9,3 +9,4 @@ requests
 langgraph
 langchain-core
 httpx
+python-dotenv

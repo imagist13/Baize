@@ -1,0 +1,34 @@
+{
+  "framework": "fastapi",
+  "language": "python",
+  "type": "application",
+  "runtime": "docker",
+  "docker": {
+    "dockerfile": "Dockerfile",
+    "port": 7860
+  },
+  "environment": {
+    "API_KEY": {
+      "description": "Gemini 或 OpenAI API 密钥",
+      "required": true
+    },
+    "BASE_URL": {
+      "description": "API 基础 URL（可选，Gemini 不需要）",
+      "required": false
+    },
+    "MODEL": {
+      "description": "使用的模型名称",
+      "required": false,
+      "default": "gemini-2.0-flash-exp"
+    },
+    "TAILIY_API_URL": {
+      "description": "Taily 网络搜索 API 地址（可选）",
+      "required": false
+    },
+    "TAILIY_API_KEY": {
+      "description": "Taily 网络搜索 API Key（可选）",
+      "required": false
+    }
+  }
+}
+
